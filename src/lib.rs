@@ -10,8 +10,8 @@ pub fn init_log(log_config_file: Option<impl AsRef<Path>>) -> Result<()> {
     match log_config_file {
         Some(path) => {
             log4rs::init_file(path, Default::default())?;
-        },
-        None => {},
+        }
+        None => {}
     }
     Ok(())
 }
