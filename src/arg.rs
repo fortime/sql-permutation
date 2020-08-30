@@ -62,4 +62,5 @@ pub fn log_config_file<'a, 'b>() -> Arg<'a, 'b> {
         .short("l")
         .help("Specifies the log config file.")
         .takes_value(true)
+        .default_value("config/log4rs.yml")
 }

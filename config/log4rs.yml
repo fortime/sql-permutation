@@ -1,0 +1,18 @@
+appenders:
+  stdout:
+    kind: console
+  statistics:
+    kind: file
+    path: "logs/statisitcs.log"
+
+root:
+  level: info
+  appenders:
+    - stdout
+
+loggers:
+  sql_permutation::concurrent:
+    level: info
+    appenders:
+      - statistics
+    additive: false
