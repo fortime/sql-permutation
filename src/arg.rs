@@ -6,10 +6,12 @@ pub const SQL_FILES: &'static str = "sql-files";
 pub const INIT_SQL_FILE: &'static str = "init-sql-file";
 pub const RESET_SQL_FILE: &'static str = "reset-sql-file";
 
+pub const TIDB_DOCKER_COMPOSE_DIR: &'static str = "tidb-docker-compose-dir";
+
 pub fn clusters<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name(CLUSTERS)
         .short("c")
-        .help("Specifies the urls for connecting to each database cluster. Example: `-c test:test@127.0.0.1:3306 test:test@127.0.0.1:3307`.")
+        .help("Specify the urls for connecting to each database cluster. Example: `-c test:test@127.0.0.1:3306 test:test@127.0.0.1:3307`.")
         .multiple(true)
         .takes_value(true)
         .required(true)
@@ -36,7 +38,7 @@ pub fn sql_files<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name(SQL_FILES)
         .short("s")
         .multiple(true)
-        .help("Specifies all sql files.")
+        .help("Specify all sql files.")
         .takes_value(true)
         .required(true)
 }
@@ -44,7 +46,7 @@ pub fn sql_files<'a, 'b>() -> Arg<'a, 'b> {
 pub fn init_sql_file<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name(INIT_SQL_FILE)
         .short("i")
-        .help("Specifies the sql file used to initiale the database.")
+        .help("Specify the sql file used to initiale the database.")
         .takes_value(true)
         .required(true)
 }
@@ -52,7 +54,7 @@ pub fn init_sql_file<'a, 'b>() -> Arg<'a, 'b> {
 pub fn reset_sql_file<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name(RESET_SQL_FILE)
         .short("r")
-        .help("Specifies the sql file used to reset the database between each batch. Be careful, init-sql-file will be executed after reset-sql-file.")
+        .help("Specify the sql file used to reset the database between each batch. Be careful, init-sql-file will be executed after reset-sql-file.")
         .takes_value(true)
         .required(true)
 }
@@ -60,7 +62,15 @@ pub fn reset_sql_file<'a, 'b>() -> Arg<'a, 'b> {
 pub fn log_config_file<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name(LOG_CONFIG_FILE)
         .short("l")
-        .help("Specifies the log config file.")
+        .help("Specify the log config file.")
         .takes_value(true)
         .default_value("config/log4rs.yml")
+}
+
+pub fn tidb_docker_compose_dir<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name(TIDB_DOCKER_COMPOSE_DIR)
+        .short("t")
+        .help("Specify the folder path storing a docker-compose.yml and a config folder which is using to start a tidb cluster.")
+        .takes_value(true)
+        .default_value("config/tidb-docker-compose")
 }

@@ -85,14 +85,14 @@ async fn run<'a>(matches: ArgMatches<'a>) -> Result<()> {
 
 #[tokio::main]
 async fn main() {
-    let app = App::new("SQL Permutation Executor")
+    let app = App::new("SQL Interlace Permutation Executor")
         .version(crate_version!())
         .author("fortime <palfortime@gmail.com>")
-        .about("");
+        .about("The command for executing all interlace permutations of multiple SQL files.");
     match run(parse_params(app)).await {
         Ok(_) => {}
         Err(e) => {
-            println!("Something is wrong:\n{:#?}", e);
+            eprintln!("Something is wrong:\n{:#?}", e);
             process::exit(1);
         }
     };
