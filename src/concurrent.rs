@@ -4,7 +4,7 @@ use mysql_async::{Opts, Pool};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::arg;
@@ -14,14 +14,36 @@ pub struct StateMut {
     running: bool,
     /// 是否由于异常被中止
     abort: bool,
-    queue: VecDeque<Vec<(usize, usize)>>,
+    queue: VecDeque<(OwnedSemaphorePermit, Vec<(usize, usize)>)>,
+    waiting_worker_signals: VecDeque<Arc<Notify>>,
     total_statistics: Vec<(String, Statistics)>,
+}
+
+impl StateMut {
+    fn clear(&mut self) {
+        // 清空key，返回produce_permit到信号量
+        while let Some((_permit, _)) = self.queue.pop_front() {}
+        // 通知所有等待的Worker
+        while let Some(signal) = self.waiting_worker_signals.pop_front() {
+            signal.notify();
+        }
+    }
+
+    pub async fn abort(&mut self) {
+        self.abort = true;
+        self.running = false;
+        self.clear();
+    }
+
+    pub async fn shutdown(&mut self) {
+        self.running = false;
+        self.clear();
+    }
 }
 
 pub struct State {
     state_mut: Mutex<StateMut>,
-    took_signal: Notify,
-    put_signal: Notify,
+    produce_permits: Arc<Semaphore>,
 }
 
 impl State {
@@ -31,10 +53,10 @@ impl State {
                 running: true,
                 abort: false,
                 queue: VecDeque::with_capacity(queue_capacity),
+                waiting_worker_signals: VecDeque::new(),
                 total_statistics: vec![],
             }),
-            took_signal: Notify::new(),
-            put_signal: Notify::new(),
+            produce_permits: Arc::new(Semaphore::new(queue_capacity)),
         }
     }
 
@@ -177,6 +199,7 @@ pub struct Worker {
     sqls_list: Vec<Vec<String>>,
     mysql_pool: Pool,
     mysql_target: String,
+    signal: Arc<Notify>,
 }
 
 impl Worker {
@@ -198,6 +221,7 @@ impl Worker {
                 mysql_opts.db_name().unwrap_or("")
             ),
             mysql_pool: Pool::new(mysql_opts),
+            signal: Arc::new(Notify::new()),
         }
     }
 
@@ -208,9 +232,9 @@ impl Worker {
                 return None;
             }
             match state_mut.queue.pop_front() {
-                Some(r) => {
-                    // 释放信号，内容被取走
-                    state.took_signal.notify();
+                Some((permit, r)) => {
+                    // 把permit放回信号量
+                    drop(permit);
                     return Some(r);
                 }
                 None => {
@@ -218,10 +242,12 @@ impl Worker {
                         // 已经完成且消费完，返回None
                         return None;
                     } else {
+                        // 放signal到等待队列
+                        state_mut.waiting_worker_signals.push_back(Arc::clone(&self.signal));
                         // 放弃锁，等signal
                         drop(state_mut);
-                        state.put_signal.notified().await;
-                        log::trace!("put signal received. continue!");
+                        self.signal.notified().await;
+                        log::trace!("signal received. continue!");
                         // 有信号，重试
                         continue;
                     }
@@ -304,11 +330,7 @@ impl Worker {
         let mut state_mut = state.lock().await;
         if is_error {
             // 发生异常设置状态
-            state_mut.abort = true;
-            state_mut.running = false;
-            // 触发通知，避免有任务在等待
-            state.took_signal.notify();
-            state.put_signal.notify();
+            state_mut.abort().await;
         }
         // 存放统计数据
         state_mut
@@ -319,7 +341,7 @@ impl Worker {
 
 pub struct ThreadPool {
     state: Arc<State>,
-    max_buffer_size: usize,
+    _max_buffer_size: usize,
     worker_handles: Vec<JoinHandle<()>>,
 }
 
@@ -327,39 +349,27 @@ impl ThreadPool {
     pub fn new(max_buffer_size: usize) -> Self {
         ThreadPool {
             state: Arc::new(State::new(max_buffer_size)),
-            max_buffer_size: max_buffer_size,
+            _max_buffer_size: max_buffer_size,
             worker_handles: vec![],
         }
     }
 
     /// 把生成好的sql索引批次提交到线程池
     pub async fn submit(&self, sql_idx_batch: Vec<(usize, usize)>) -> Result<()> {
-        loop {
-            // 获取锁
-            let mut state_mut = self.state.lock().await;
-            if !state_mut.running {
-                // 线程池被关闭
-                return Err(Error::msg("ThreadPool is not running"));
-            }
-            // `max_buffer_size`为0代表不限制
-            if self.max_buffer_size != 0 && state_mut.queue.len() >= self.max_buffer_size {
-                log::trace!(
-                    "buffer is full: cur[{}], max[{}]. waiting!",
-                    state_mut.queue.len(),
-                    self.max_buffer_size
-                );
-                // 满了，释放锁，等待通知
-                drop(state_mut);
-                self.state.took_signal.notified().await;
-                log::trace!("took signal received. continue!");
-                // 有信号，重试
-                continue;
-            }
-            state_mut.queue.push_back(sql_idx_batch);
-            self.state.put_signal.notify();
-            log::trace!("sql idx batch pushed.");
-            break;
+        // 先获取permit，再放到队列
+        let permit = self.state.produce_permits.clone().acquire_owned().await;
+        // 获取锁
+        let mut state_mut = self.state.lock().await;
+        if !state_mut.running {
+            // 线程池被关闭
+            return Err(Error::msg("ThreadPool is not running"));
         }
+        state_mut.queue.push_back((permit, sql_idx_batch));
+        // 通知一个阻塞的Worker
+        if let Some(signal) = state_mut.waiting_worker_signals.pop_front() {
+            signal.notify();
+        }
+        log::trace!("sql idx batch pushed.");
         Ok(())
     }
 
@@ -368,15 +378,13 @@ impl ThreadPool {
         let handle = tokio::spawn(async move {
             worker.run(state).await;
         });
+        // 增加用于生产的permit
+        self.state.produce_permits.add_permits(1);
         self.worker_handles.push(handle);
     }
 
     pub async fn shutdown(&self) {
-        let mut state_mut = self.state.lock().await;
-        state_mut.running = false;
-        // 触发通知，避免有任务在等待
-        self.state.took_signal.notify();
-        self.state.put_signal.notify();
+        self.state.lock().await.shutdown().await;
     }
 
     pub async fn join(&mut self) {
